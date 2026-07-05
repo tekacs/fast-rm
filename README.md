@@ -10,6 +10,12 @@ purge completes.
 
 ## Install
 
+From crates.io:
+
+```sh
+cargo install fast-rm
+```
+
 From this checkout:
 
 ```sh
@@ -190,3 +196,7 @@ Trash-only behavior on disposable ZFS, ext4-on-zvol, and XFS test trees:
 ```sh
 scripts/remote-linux-matrix.sh
 ```
+
+## License
+
+MIT.

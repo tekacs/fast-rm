@@ -2,6 +2,12 @@
 name = "fast-rm"
 version = "0.1.0"
 edition = "2024"
+description = "Fast Trash-backed parallel deletion for large directory trees"
+repository = "https://github.com/tekacs/fast-rm"
+readme = "README.md"
+license = "MIT"
+keywords = ["rm", "delete", "trash", "unlink", "cli"]
+categories = ["command-line-utilities", "filesystem"]
 
 [dependencies]
 anyhow = "1.0"
