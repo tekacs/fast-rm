@@ -1,0 +1,24 @@
+[package]
+name = "fast-delete"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0"
+clap = { version = "4.5", features = ["derive"] }
+libc = "0.2"
+rayon = "1.10"
+time = { version = "0.3", features = ["local-offset"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6.4"
+objc2-foundation = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "NSFileManager",
+    "NSURL",
+    "NSError",
+    "NSString",
+] }
+
+[dev-dependencies]
+tempfile = "3.10"
