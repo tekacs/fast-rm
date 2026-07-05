@@ -21,6 +21,14 @@ struct Args {
     #[arg(long, hide = true, value_name = "PATH")]
     worker_job: Option<PathBuf>,
 
+    /// Ignore nonexistent paths and never fail for zero operands.
+    #[arg(short = 'f', long)]
+    force: bool,
+
+    /// Accept rm-style recursive deletion flags. Directories are always recursive.
+    #[arg(short = 'r', visible_short_alias = 'R', long)]
+    recursive: bool,
+
     /// Delete paths directly instead of first moving them to the OS Trash.
     #[arg(long, alias = "purge-only", conflicts_with_all = ["trash_only", "detach"])]
     direct: bool,
@@ -63,6 +71,12 @@ fn run() -> Result<ExitCode> {
         return Ok(exit_for_errors(manifest.errors.len()));
     }
 
+    let _recursive = args.recursive;
+
+    if args.paths.is_empty() && args.force {
+        return Ok(ExitCode::SUCCESS);
+    }
+
     if args.paths.is_empty() {
         bail!("at least one path is required");
     }
@@ -77,16 +91,42 @@ fn run() -> Result<ExitCode> {
     }
 
     if args.direct {
-        let report = purge_foreground(args.paths, options, "deleting directly")
-            .context("purge failed to start")?;
+        let mut direct_paths = Vec::new();
+        let mut path_errors = 0usize;
+
+        for path in args.paths {
+            if missing(&path) {
+                if !args.force {
+                    path_errors += 1;
+                    eprintln!(
+                        "cannot remove {}: No such file or directory",
+                        path.display()
+                    );
+                }
+                continue;
+            }
+
+            direct_paths.push(path);
+        }
+
+        if direct_paths.is_empty() {
+            return Ok(exit_for_errors(path_errors));
+        }
+
+        let report =
+            purge_foreground(direct_paths, options, "deleting directly").context("purge failed")?;
         print_report(&report);
-        return Ok(exit_for_errors(report.errors.len()));
+        return Ok(exit_for_errors(path_errors + report.errors.len()));
     }
 
     let mut staged = Vec::new();
     let mut stage_errors = 0usize;
 
     for path in &args.paths {
+        if args.force && missing(path) {
+            continue;
+        }
+
         match stage_path(path) {
             Ok(item) => {
                 println!(
@@ -104,6 +144,10 @@ fn run() -> Result<ExitCode> {
     }
 
     if args.trash_only {
+        return Ok(exit_for_errors(stage_errors));
+    }
+
+    if staged.is_empty() && args.force {
         return Ok(exit_for_errors(stage_errors));
     }
 
@@ -199,7 +243,10 @@ fn exit_for_errors(errors: usize) -> ExitCode {
 }
 
 fn missing(path: &Path) -> bool {
-    std::fs::symlink_metadata(path).is_err()
+    matches!(
+        std::fs::symlink_metadata(path),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound
+    )
 }
 
 fn print_report(report: &fast_rm::PurgeReport) {

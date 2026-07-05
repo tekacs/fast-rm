@@ -1,6 +1,6 @@
 [package]
 name = "fast-rm"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "Fast Trash-backed parallel deletion for large directory trees"
 repository = "https://github.com/tekacs/fast-rm"

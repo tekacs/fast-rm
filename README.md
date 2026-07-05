@@ -39,6 +39,7 @@ Useful modes:
 
 ```sh
 fast-rm path [path ...]          # Trash-then-purge
+fast-rm -rf path [path ...]      # rm-compatible recursive/force spelling
 fast-rm --direct path [path ...] # Delete directly, without Trash staging
 fast-rm --trash-only path        # Move to Trash and stop
 fast-rm --detach path            # Move to Trash, then purge in the background
@@ -47,6 +48,21 @@ fast-rm --cross-device path      # Traverse nested device/mount boundaries
 ```
 
 `--purge-only` is accepted as an alias for `--direct`.
+
+`-r`, `-R`, and `--recursive` are accepted for `rm` muscle memory. Directory
+removal is always recursive in `fast-rm`, so these flags do not change traversal.
+
+`-f` and `--force` ignore nonexistent operands and allow zero operands, matching
+the useful part of `rm -f`.
+
+For an `rm` alias:
+
+```sh
+alias rm='fast-rm'
+```
+
+With that alias, `rm -rf target` uses the default Trash-then-purge behavior. Use
+`rm --direct -rf target` when you want to skip Trash staging.
 
 ## Modes
 
