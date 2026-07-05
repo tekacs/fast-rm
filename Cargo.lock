@@ -188,7 +188,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "fast-delete"
+name = "fast-rm"
 version = "0.1.0"
 dependencies = [
  "anyhow",

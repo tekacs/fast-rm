@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-tag="fast-delete-matrix-$(date +%s)-$$"
+tag="fast-rm-matrix-$(date +%s)-$$"
 dataset="work/${tag}-zfs"
 zvol_ext4="work/${tag}-ext4"
 zvol_xfs="work/${tag}-xfs"
@@ -9,7 +9,7 @@ mnt_zfs="/mnt/${tag}-zfs"
 mnt_ext4="/mnt/${tag}-ext4"
 mnt_xfs="/mnt/${tag}-xfs"
 uid_gid="$(id -u):$(id -g)"
-bin="target/debug/fast-delete"
+bin="target/debug/fast-rm"
 
 cleanup() {
     set +e

@@ -164,7 +164,7 @@ fn write_manifest(path: &Path, manifest: &JobManifest) -> Result<()> {
 }
 
 fn state_root() -> Result<PathBuf> {
-    if let Some(path) = std::env::var_os("FAST_DELETE_STATE_DIR")
+    if let Some(path) = std::env::var_os("FAST_RM_STATE_DIR")
         && !path.is_empty()
     {
         return Ok(PathBuf::from(path));
@@ -175,7 +175,7 @@ fn state_root() -> Result<PathBuf> {
         let home = std::env::var_os("HOME").ok_or_else(|| anyhow!("HOME is not set"))?;
         Ok(PathBuf::from(home)
             .join("Library/Application Support")
-            .join("fast-delete"))
+            .join("fast-rm"))
     }
 
     #[cfg(not(target_os = "macos"))]
@@ -183,11 +183,11 @@ fn state_root() -> Result<PathBuf> {
         if let Some(path) = std::env::var_os("XDG_STATE_HOME")
             && !path.is_empty()
         {
-            return Ok(PathBuf::from(path).join("fast-delete"));
+            return Ok(PathBuf::from(path).join("fast-rm"));
         }
 
         let home = std::env::var_os("HOME").ok_or_else(|| anyhow!("HOME is not set"))?;
-        Ok(PathBuf::from(home).join(".local/state/fast-delete"))
+        Ok(PathBuf::from(home).join(".local/state/fast-rm"))
     }
 }
 
@@ -231,7 +231,7 @@ mod tests {
         fs::write(staged.join("a/b/file"), "y").unwrap();
 
         unsafe {
-            std::env::set_var("FAST_DELETE_STATE_DIR", &state);
+            std::env::set_var("FAST_RM_STATE_DIR", &state);
         }
 
         let item = StagedItem {

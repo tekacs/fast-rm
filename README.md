@@ -1,6 +1,6 @@
-# fast-delete
+# fast-rm
 
-`fast-delete` is a Rust deleter for large directory trees.
+`fast-rm` is a Rust deleter for large directory trees.
 
 By default it moves each top-level target into the platform Trash first, then
 purges the staged Trash path with a parallel fd-relative walker. That gives the
@@ -19,7 +19,7 @@ cargo install --locked --path .
 ## Usage
 
 ```sh
-fast-delete path [path ...]
+fast-rm path [path ...]
 ```
 
 Default mode:
@@ -32,12 +32,12 @@ Default mode:
 Useful modes:
 
 ```sh
-fast-delete path [path ...]          # Trash-then-purge
-fast-delete --direct path [path ...] # Delete directly, without Trash staging
-fast-delete --trash-only path        # Move to Trash and stop
-fast-delete --detach path            # Move to Trash, then purge in the background
-fast-delete --jobs 24 path           # Choose purge worker threads
-fast-delete --cross-device path      # Traverse nested device/mount boundaries
+fast-rm path [path ...]          # Trash-then-purge
+fast-rm --direct path [path ...] # Delete directly, without Trash staging
+fast-rm --trash-only path        # Move to Trash and stop
+fast-rm --detach path            # Move to Trash, then purge in the background
+fast-rm --jobs 24 path           # Choose purge worker threads
+fast-rm --cross-device path      # Traverse nested device/mount boundaries
 ```
 
 `--purge-only` is accepted as an alias for `--direct`.
@@ -49,14 +49,14 @@ fast-delete --cross-device path      # Traverse nested device/mount boundaries
 This is the default. It is meant for "make this huge tree disappear now" usage.
 
 On a successful Trash move, the original path is gone immediately. The purge
-phase then deletes the staged Trash path. If `fast-delete` exits or crashes after
+phase then deletes the staged Trash path. If `fast-rm` exits or crashes after
 the Trash move but before the purge completes, the remaining item is still in the
 platform Trash location.
 
 ### Direct
 
 ```sh
-fast-delete --direct target*
+fast-rm --direct target*
 ```
 
 Direct mode skips Trash staging and purges the paths exactly where they are.
@@ -65,7 +65,7 @@ It is the fastest path when you do not want the recoverable staging step.
 ### Trash-only
 
 ```sh
-fast-delete --trash-only path
+fast-rm --trash-only path
 ```
 
 Trash-only mode performs only the platform Trash move. It is useful when you want
@@ -75,7 +75,7 @@ OS empty Trash operation handle deletion later.
 ### Detached
 
 ```sh
-fast-delete --detach path
+fast-rm --detach path
 ```
 
 Detached mode stages into Trash, writes a job manifest, spawns a background
@@ -85,12 +85,12 @@ counts, and errors in the manifest.
 Job manifests live under:
 
 ```text
-macOS: $HOME/Library/Application Support/fast-delete/jobs/
-Linux: $XDG_STATE_HOME/fast-delete/jobs/
-Linux fallback: $HOME/.local/state/fast-delete/jobs/
+macOS: $HOME/Library/Application Support/fast-rm/jobs/
+Linux: $XDG_STATE_HOME/fast-rm/jobs/
+Linux fallback: $HOME/.local/state/fast-rm/jobs/
 ```
 
-Set `FAST_DELETE_STATE_DIR` to override that root.
+Set `FAST_RM_STATE_DIR` to override that root.
 
 Detached workers write logs next to the manifest using the same path with a
 `.log` extension.
@@ -105,7 +105,7 @@ macOS staging uses Foundation's `NSFileManager` Trash API:
 trashItemAtURL:resultingItemURL:error:
 ```
 
-`fast-delete` purges the returned Trash destination. If Foundation does not
+`fast-rm` purges the returned Trash destination. If Foundation does not
 return a destination, the command fails rather than guessing where the item went.
 
 ### Linux
@@ -168,7 +168,7 @@ Foreground purge modes show a two-line progress display:
   [########################################----------------]
 ```
 
-The bar is adaptive. `fast-delete` does not pre-scan the tree, because that would
+The bar is adaptive. `fast-rm` does not pre-scan the tree, because that would
 double the traversal work. Instead, the known-work denominator grows as traversal
 discovers roots, child directories, and file batches. The completed position only
 moves forward as entries are actually removed or skipped.

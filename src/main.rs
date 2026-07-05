@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use clap::Parser;
-use fast_delete::{
+use fast_rm::{
     PurgeOptions, PurgeProgress, PurgeReport, create_job, purge_paths_with_progress, run_job,
     stage_path,
 };
@@ -48,7 +48,7 @@ fn main() -> ExitCode {
     match run() {
         Ok(code) => code,
         Err(error) => {
-            eprintln!("fast-delete: {error:#}");
+            eprintln!("fast-rm: {error:#}");
             ExitCode::FAILURE
         }
     }
@@ -202,7 +202,7 @@ fn missing(path: &Path) -> bool {
     std::fs::symlink_metadata(path).is_err()
 }
 
-fn print_report(report: &fast_delete::PurgeReport) {
+fn print_report(report: &fast_rm::PurgeReport) {
     println!(
         "purged {} files and {} directories; skipped {}; errors {}",
         report.files_removed,
