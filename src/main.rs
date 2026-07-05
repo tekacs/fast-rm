@@ -220,6 +220,8 @@ struct CliProgress {
     label: &'static str,
     jobs: usize,
     pb: ProgressBar,
+    work_known: AtomicU64,
+    work_done: AtomicU64,
     roots: AtomicU64,
     dirs_scanned: AtomicU64,
     files_removed: AtomicU64,
@@ -230,11 +232,13 @@ struct CliProgress {
 
 impl CliProgress {
     fn new(label: &'static str, options: PurgeOptions) -> Self {
-        let pb = ProgressBar::new_spinner();
+        let pb = ProgressBar::new(1);
         pb.set_style(
-            ProgressStyle::with_template("{spinner:.green} {msg}")
-                .expect("progress template should be valid")
-                .tick_strings(&["-", "\\", "|", "/"]),
+            ProgressStyle::with_template(
+                "{spinner:.green} {prefix}\n  [{wide_bar:.cyan/blue}] {msg}",
+            )
+            .expect("progress template should be valid")
+            .tick_strings(&["-", "\\", "|", "/"]),
         );
         pb.enable_steady_tick(Duration::from_millis(80));
 
@@ -242,6 +246,8 @@ impl CliProgress {
             label,
             jobs: options.jobs,
             pb,
+            work_known: AtomicU64::new(0),
+            work_done: AtomicU64::new(0),
             roots: AtomicU64::new(0),
             dirs_scanned: AtomicU64::new(0),
             files_removed: AtomicU64::new(0),
@@ -259,8 +265,13 @@ impl CliProgress {
     }
 
     fn refresh(&self, active: impl AsRef<str>) {
-        self.pb.set_message(format!(
-            "{} | roots {} | scanned dirs {} | removed {} files + {} dirs | skipped {} | errors {} | jobs {} | {}",
+        let known = self.work_known.load(Ordering::Relaxed).max(1);
+        let done = self.work_done.load(Ordering::Relaxed).min(known);
+
+        self.pb.set_length(known);
+        self.pb.set_position(done);
+        self.pb.set_prefix(format!(
+            "{} | roots {} | scanned dirs {} | removed {} files + {} dirs | skipped {} | errors {} | jobs {}",
             self.label,
             self.roots.load(Ordering::Relaxed),
             self.dirs_scanned.load(Ordering::Relaxed),
@@ -268,7 +279,13 @@ impl CliProgress {
             self.dirs_removed.load(Ordering::Relaxed),
             self.skipped.load(Ordering::Relaxed),
             self.errors.load(Ordering::Relaxed),
-            self.jobs,
+            self.jobs
+        ));
+        self.pb.set_message(format!(
+            "{} / {} known ({:.0}%) | {}",
+            format_count(done),
+            format_count(known),
+            (done as f64 / known as f64) * 100.0,
             active.as_ref()
         ));
     }
@@ -281,6 +298,11 @@ impl CliProgress {
 }
 
 impl PurgeProgress for CliProgress {
+    fn work_discovered(&self, count: u64) {
+        let total = self.work_known.fetch_add(count, Ordering::Relaxed) + count;
+        self.maybe_refresh("discovering work", total);
+    }
+
     fn root_started(&self, path: &Path) {
         let count = self.roots.fetch_add(1, Ordering::Relaxed) + 1;
         self.maybe_refresh(format!("root {}", short_path(path)), count);
@@ -293,16 +315,19 @@ impl PurgeProgress for CliProgress {
 
     fn file_removed(&self) {
         let count = self.files_removed.fetch_add(1, Ordering::Relaxed) + 1;
+        self.work_done.fetch_add(1, Ordering::Relaxed);
         self.maybe_refresh("unlinking files", count);
     }
 
     fn dir_removed(&self) {
         let count = self.dirs_removed.fetch_add(1, Ordering::Relaxed) + 1;
+        self.work_done.fetch_add(1, Ordering::Relaxed);
         self.maybe_refresh("removing directories", count);
     }
 
     fn skipped(&self) {
         let count = self.skipped.fetch_add(1, Ordering::Relaxed) + 1;
+        self.work_done.fetch_add(1, Ordering::Relaxed);
         self.maybe_refresh("skipping cross-device directory", count);
     }
 
@@ -310,6 +335,24 @@ impl PurgeProgress for CliProgress {
         let count = self.errors.fetch_add(1, Ordering::Relaxed) + 1;
         self.maybe_refresh("recording errors", count);
     }
+}
+
+fn format_count(count: u64) -> String {
+    let text = count.to_string();
+    let mut formatted = String::with_capacity(text.len() + text.len() / 3);
+    let first_group = text.len() % 3;
+
+    for (index, ch) in text.chars().enumerate() {
+        if index > 0
+            && (index == first_group
+                || (index > first_group && (index - first_group).is_multiple_of(3)))
+        {
+            formatted.push(',');
+        }
+        formatted.push(ch);
+    }
+
+    formatted
 }
 
 fn short_path(path: &Path) -> String {

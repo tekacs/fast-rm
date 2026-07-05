@@ -27,6 +27,7 @@ pub struct PurgeReport {
 }
 
 pub trait PurgeProgress: Send + Sync {
+    fn work_discovered(&self, _count: u64) {}
     fn root_started(&self, _path: &Path) {}
     fn dir_scanned(&self, _path: &Path) {}
     fn file_removed(&self) {}
@@ -145,6 +146,7 @@ fn purge_paths_inner(
 }
 
 fn purge_path(path: PathBuf, context: &PurgeContext) {
+    context.work_discovered(1);
     context.root_started(&path);
 
     if path.as_os_str().is_empty() {
@@ -193,6 +195,7 @@ fn purge_path(path: PathBuf, context: &PurgeContext) {
     match std::fs::remove_dir(&path) {
         Ok(()) => {
             context.dirs_removed.fetch_add(1, Ordering::Relaxed);
+            context.dir_removed();
         }
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
         Err(error) => context.record(path, "rmdir", error),
@@ -269,6 +272,7 @@ fn scan_dir<'scope>(
                     &mut file_batch,
                     context,
                 );
+                context.work_discovered(1);
                 spawn_dir(
                     scope,
                     parent_fd,
@@ -299,6 +303,7 @@ fn scan_dir<'scope>(
                         &mut file_batch,
                         context,
                     );
+                    context.work_discovered(1);
                     spawn_dir(
                         scope,
                         parent_fd,
@@ -352,6 +357,7 @@ fn flush_files<'scope>(
     }
 
     let batch = std::mem::take(file_batch);
+    context.work_discovered(batch.len() as u64);
     scope.spawn(move |_| {
         for name in batch {
             unlink_name(parent_fd, &name, &base_path, context);
@@ -558,6 +564,12 @@ fn dev_to_u64(dev: libc::dev_t) -> u64 {
 }
 
 impl PurgeContext {
+    fn work_discovered(&self, count: u64) {
+        if let Some(progress) = &self.progress {
+            progress.work_discovered(count);
+        }
+    }
+
     fn root_started(&self, path: &Path) {
         if let Some(progress) = &self.progress {
             progress.root_started(path);
@@ -601,10 +613,33 @@ impl PurgeContext {
 mod tests {
     use std::fs;
     use std::os::unix::fs::symlink;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     use tempfile::tempdir;
 
     use super::*;
+
+    #[derive(Default)]
+    struct CountingProgress {
+        work_discovered: AtomicU64,
+        files_removed: AtomicU64,
+        dirs_removed: AtomicU64,
+    }
+
+    impl PurgeProgress for CountingProgress {
+        fn work_discovered(&self, count: u64) {
+            self.work_discovered.fetch_add(count, Ordering::Relaxed);
+        }
+
+        fn file_removed(&self) {
+            self.files_removed.fetch_add(1, Ordering::Relaxed);
+        }
+
+        fn dir_removed(&self) {
+            self.dirs_removed.fetch_add(1, Ordering::Relaxed);
+        }
+    }
 
     #[test]
     fn purges_nested_tree() {
@@ -628,6 +663,33 @@ mod tests {
         assert_eq!(report.errors.len(), 0);
         assert_eq!(report.files_removed, 3);
         assert_eq!(report.dirs_removed, 4);
+    }
+
+    #[test]
+    fn progress_counts_known_work_including_root_dir() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path().join("root");
+        fs::create_dir_all(root.join("a/b/c")).unwrap();
+        fs::write(root.join("a/file-a"), "a").unwrap();
+        fs::write(root.join("a/b/file-b"), "b").unwrap();
+        fs::write(root.join("a/b/c/file-c"), "c").unwrap();
+
+        let progress = Arc::new(CountingProgress::default());
+        let report = purge_paths_with_progress(
+            vec![root],
+            PurgeOptions {
+                jobs: 4,
+                cross_device: false,
+            },
+            progress.clone(),
+        )
+        .unwrap();
+
+        assert_eq!(report.files_removed, 3);
+        assert_eq!(report.dirs_removed, 4);
+        assert_eq!(progress.work_discovered.load(Ordering::Relaxed), 7);
+        assert_eq!(progress.files_removed.load(Ordering::Relaxed), 3);
+        assert_eq!(progress.dirs_removed.load(Ordering::Relaxed), 4);
     }
 
     #[test]
