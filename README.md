@@ -14,6 +14,7 @@ Modes:
 ```sh
 fast-delete --trash-only path [path ...]  # stage into OS Trash, stop
 fast-delete --direct path [path ...]      # skip Trash staging, delete directly
+fast-delete --detach path [path ...]      # stage, spawn background purge worker
 fast-delete --jobs 16 path [path ...]     # choose purge worker threads
 fast-delete --cross-device path           # traverse nested mount/device boundaries
 ```
