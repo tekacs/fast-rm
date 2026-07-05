@@ -6,8 +6,8 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use anyhow::{Result, anyhow};
 use rayon::Scope;
@@ -24,6 +24,15 @@ pub struct PurgeReport {
     pub dirs_removed: u64,
     pub skipped: u64,
     pub errors: Vec<PurgeError>,
+}
+
+pub trait PurgeProgress: Send + Sync {
+    fn root_started(&self, _path: &Path) {}
+    fn dir_scanned(&self, _path: &Path) {}
+    fn file_removed(&self) {}
+    fn dir_removed(&self) {}
+    fn skipped(&self) {}
+    fn error(&self) {}
 }
 
 #[derive(Debug)]
@@ -61,6 +70,7 @@ struct PurgeContext {
     dirs_removed: AtomicU64,
     skipped: AtomicU64,
     errors: Mutex<Vec<PurgeError>>,
+    progress: Option<Arc<dyn PurgeProgress>>,
 }
 
 enum EntryKind {
@@ -80,6 +90,22 @@ impl Drop for DirStream {
 }
 
 pub fn purge_paths(paths: Vec<PathBuf>, options: PurgeOptions) -> Result<PurgeReport> {
+    purge_paths_inner(paths, options, None)
+}
+
+pub fn purge_paths_with_progress(
+    paths: Vec<PathBuf>,
+    options: PurgeOptions,
+    progress: Arc<dyn PurgeProgress>,
+) -> Result<PurgeReport> {
+    purge_paths_inner(paths, options, Some(progress))
+}
+
+fn purge_paths_inner(
+    paths: Vec<PathBuf>,
+    options: PurgeOptions,
+    progress: Option<Arc<dyn PurgeProgress>>,
+) -> Result<PurgeReport> {
     if options.jobs == 0 {
         return Err(anyhow!("purge jobs must be greater than zero"));
     }
@@ -90,6 +116,7 @@ pub fn purge_paths(paths: Vec<PathBuf>, options: PurgeOptions) -> Result<PurgeRe
         dirs_removed: AtomicU64::new(0),
         skipped: AtomicU64::new(0),
         errors: Mutex::new(Vec::new()),
+        progress,
     };
 
     let pool = rayon::ThreadPoolBuilder::new()
@@ -118,6 +145,8 @@ pub fn purge_paths(paths: Vec<PathBuf>, options: PurgeOptions) -> Result<PurgeRe
 }
 
 fn purge_path(path: PathBuf, context: &PurgeContext) {
+    context.root_started(&path);
+
     if path.as_os_str().is_empty() {
         context.record(path, "refuse", "empty path");
         return;
@@ -142,6 +171,7 @@ fn purge_path(path: PathBuf, context: &PurgeContext) {
         match std::fs::remove_file(&path) {
             Ok(()) => {
                 context.files_removed.fetch_add(1, Ordering::Relaxed);
+                context.file_removed();
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => context.record(path, "unlink", error),
@@ -171,6 +201,7 @@ fn purge_path(path: PathBuf, context: &PurgeContext) {
 
 fn purge_open_dir(fd: OwnedFd, display_path: PathBuf, root_dev: u64, context: &PurgeContext) {
     let raw_fd = fd.as_raw_fd();
+    context.dir_scanned(&display_path);
 
     rayon::scope(|scope| {
         let scan_fd = match dup_fd(raw_fd) {
@@ -363,6 +394,7 @@ fn purge_child_dir(
         match fd_dev(fd.as_raw_fd()) {
             Ok(dev) if dev != root_dev => {
                 context.skipped.fetch_add(1, Ordering::Relaxed);
+                context.skipped();
                 context.record(display_path, "skip", "cross-device directory");
                 return;
             }
@@ -379,6 +411,7 @@ fn purge_child_dir(
     let result = unsafe { libc::unlinkat(parent_fd, c_name.as_ptr(), libc::AT_REMOVEDIR) };
     if result == 0 {
         context.dirs_removed.fetch_add(1, Ordering::Relaxed);
+        context.dir_removed();
         return;
     }
 
@@ -400,6 +433,7 @@ fn unlink_name(parent_fd: RawFd, name: &[u8], base_path: &Path, context: &PurgeC
     let result = unsafe { libc::unlinkat(parent_fd, c_name.as_ptr(), 0) };
     if result == 0 {
         context.files_removed.fetch_add(1, Ordering::Relaxed);
+        context.file_removed();
         return;
     }
 
@@ -524,9 +558,42 @@ fn dev_to_u64(dev: libc::dev_t) -> u64 {
 }
 
 impl PurgeContext {
+    fn root_started(&self, path: &Path) {
+        if let Some(progress) = &self.progress {
+            progress.root_started(path);
+        }
+    }
+
+    fn dir_scanned(&self, path: &Path) {
+        if let Some(progress) = &self.progress {
+            progress.dir_scanned(path);
+        }
+    }
+
+    fn file_removed(&self) {
+        if let Some(progress) = &self.progress {
+            progress.file_removed();
+        }
+    }
+
+    fn dir_removed(&self) {
+        if let Some(progress) = &self.progress {
+            progress.dir_removed();
+        }
+    }
+
+    fn skipped(&self) {
+        if let Some(progress) = &self.progress {
+            progress.skipped();
+        }
+    }
+
     fn record(&self, path: PathBuf, operation: &'static str, error: impl fmt::Display) {
         let mut errors = self.errors.lock().expect("purge error ledger poisoned");
         errors.push(PurgeError::new(path, operation, error));
+        if let Some(progress) = &self.progress {
+            progress.error();
+        }
     }
 }
 

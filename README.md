@@ -32,3 +32,6 @@ Trash/
 
 If the process dies after staging, the item is still in a desktop-visible Trash
 location whenever the platform Trash move completed.
+
+Foreground purge modes show live progress while they scan and unlink. Detached
+workers stay quiet and record status in their job manifest.

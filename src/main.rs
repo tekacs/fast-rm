@@ -1,9 +1,16 @@
 use std::path::{Path, PathBuf};
 use std::process::{ExitCode, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use clap::Parser;
-use fast_delete::{PurgeOptions, create_job, purge_paths, run_job, stage_path};
+use fast_delete::{
+    PurgeOptions, PurgeProgress, PurgeReport, create_job, purge_paths_with_progress, run_job,
+    stage_path,
+};
+use indicatif::{ProgressBar, ProgressStyle};
 
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
@@ -70,7 +77,8 @@ fn run() -> Result<ExitCode> {
     }
 
     if args.direct {
-        let report = purge_paths(args.paths, options).context("purge failed to start")?;
+        let report = purge_foreground(args.paths, options, "deleting directly")
+            .context("purge failed to start")?;
         print_report(&report);
         return Ok(exit_for_errors(report.errors.len()));
     }
@@ -110,7 +118,8 @@ fn run() -> Result<ExitCode> {
         .iter()
         .map(|item| item.staged_path.clone())
         .collect::<Vec<_>>();
-    let report = purge_paths(staged_paths, options).context("purge failed to start")?;
+    let report = purge_foreground(staged_paths, options, "purging staged Trash paths")
+        .context("purge failed to start")?;
 
     for item in &staged {
         if missing(&item.staged_path)
@@ -127,6 +136,17 @@ fn run() -> Result<ExitCode> {
 
     print_report(&report);
     Ok(exit_for_errors(stage_errors + report.errors.len()))
+}
+
+fn purge_foreground(
+    paths: Vec<PathBuf>,
+    options: PurgeOptions,
+    label: &'static str,
+) -> Result<PurgeReport> {
+    let progress = Arc::new(CliProgress::new(label, options));
+    let report = purge_paths_with_progress(paths, options, progress.clone())?;
+    progress.finish();
+    Ok(report)
 }
 
 fn spawn_worker(job_path: &Path) -> Result<()> {
@@ -194,4 +214,114 @@ fn print_report(report: &fast_delete::PurgeReport) {
     for error in &report.errors {
         eprintln!("{error}");
     }
+}
+
+struct CliProgress {
+    label: &'static str,
+    jobs: usize,
+    pb: ProgressBar,
+    roots: AtomicU64,
+    dirs_scanned: AtomicU64,
+    files_removed: AtomicU64,
+    dirs_removed: AtomicU64,
+    skipped: AtomicU64,
+    errors: AtomicU64,
+}
+
+impl CliProgress {
+    fn new(label: &'static str, options: PurgeOptions) -> Self {
+        let pb = ProgressBar::new_spinner();
+        pb.set_style(
+            ProgressStyle::with_template("{spinner:.green} {msg}")
+                .expect("progress template should be valid")
+                .tick_strings(&["-", "\\", "|", "/"]),
+        );
+        pb.enable_steady_tick(Duration::from_millis(80));
+
+        let progress = Self {
+            label,
+            jobs: options.jobs,
+            pb,
+            roots: AtomicU64::new(0),
+            dirs_scanned: AtomicU64::new(0),
+            files_removed: AtomicU64::new(0),
+            dirs_removed: AtomicU64::new(0),
+            skipped: AtomicU64::new(0),
+            errors: AtomicU64::new(0),
+        };
+        progress.refresh("starting");
+        progress
+    }
+
+    fn finish(&self) {
+        self.refresh("done");
+        self.pb.finish_and_clear();
+    }
+
+    fn refresh(&self, active: impl AsRef<str>) {
+        self.pb.set_message(format!(
+            "{} | roots {} | scanned dirs {} | removed {} files + {} dirs | skipped {} | errors {} | jobs {} | {}",
+            self.label,
+            self.roots.load(Ordering::Relaxed),
+            self.dirs_scanned.load(Ordering::Relaxed),
+            self.files_removed.load(Ordering::Relaxed),
+            self.dirs_removed.load(Ordering::Relaxed),
+            self.skipped.load(Ordering::Relaxed),
+            self.errors.load(Ordering::Relaxed),
+            self.jobs,
+            active.as_ref()
+        ));
+    }
+
+    fn maybe_refresh(&self, active: impl AsRef<str>, count: u64) {
+        if count < 16 || count.is_multiple_of(64) {
+            self.refresh(active);
+        }
+    }
+}
+
+impl PurgeProgress for CliProgress {
+    fn root_started(&self, path: &Path) {
+        let count = self.roots.fetch_add(1, Ordering::Relaxed) + 1;
+        self.maybe_refresh(format!("root {}", short_path(path)), count);
+    }
+
+    fn dir_scanned(&self, path: &Path) {
+        let count = self.dirs_scanned.fetch_add(1, Ordering::Relaxed) + 1;
+        self.maybe_refresh(format!("scanning {}", short_path(path)), count);
+    }
+
+    fn file_removed(&self) {
+        let count = self.files_removed.fetch_add(1, Ordering::Relaxed) + 1;
+        self.maybe_refresh("unlinking files", count);
+    }
+
+    fn dir_removed(&self) {
+        let count = self.dirs_removed.fetch_add(1, Ordering::Relaxed) + 1;
+        self.maybe_refresh("removing directories", count);
+    }
+
+    fn skipped(&self) {
+        let count = self.skipped.fetch_add(1, Ordering::Relaxed) + 1;
+        self.maybe_refresh("skipping cross-device directory", count);
+    }
+
+    fn error(&self) {
+        let count = self.errors.fetch_add(1, Ordering::Relaxed) + 1;
+        self.maybe_refresh("recording errors", count);
+    }
+}
+
+fn short_path(path: &Path) -> String {
+    let text = path.display().to_string();
+    let char_count = text.chars().count();
+    if char_count <= 96 {
+        return text;
+    }
+
+    let tail = text
+        .chars()
+        .skip(char_count.saturating_sub(93))
+        .collect::<String>();
+    format!("...{tail}")
 }
