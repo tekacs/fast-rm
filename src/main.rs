@@ -234,11 +234,9 @@ impl CliProgress {
     fn new(label: &'static str, options: PurgeOptions) -> Self {
         let pb = ProgressBar::new(1);
         pb.set_style(
-            ProgressStyle::with_template(
-                "{spinner:.green} {prefix}\n  [{wide_bar:.cyan/blue}] {msg}",
-            )
-            .expect("progress template should be valid")
-            .tick_strings(&["-", "\\", "|", "/"]),
+            ProgressStyle::with_template("{spinner:.green} {prefix}\n  [{wide_bar:.cyan/blue}]")
+                .expect("progress template should be valid")
+                .tick_strings(&["-", "\\", "|", "/"]),
         );
         pb.enable_steady_tick(Duration::from_millis(80));
 
@@ -255,44 +253,38 @@ impl CliProgress {
             skipped: AtomicU64::new(0),
             errors: AtomicU64::new(0),
         };
-        progress.refresh("starting");
+        progress.refresh();
         progress
     }
 
     fn finish(&self) {
-        self.refresh("done");
+        self.refresh();
         self.pb.finish_and_clear();
     }
 
-    fn refresh(&self, active: impl AsRef<str>) {
+    fn refresh(&self) {
         let known = self.work_known.load(Ordering::Relaxed).max(1);
         let done = self.work_done.load(Ordering::Relaxed).min(known);
 
         self.pb.set_length(known);
         self.pb.set_position(done);
         self.pb.set_prefix(format!(
-            "{} | roots {} | scanned dirs {} | removed {} files + {} dirs | skipped {} | errors {} | jobs {}",
+            "{} | roots {} | scanned dirs {} | removed {} files + {} dirs | known {:.0}% | skipped {} | errors {} | jobs {}",
             self.label,
             self.roots.load(Ordering::Relaxed),
             self.dirs_scanned.load(Ordering::Relaxed),
             self.files_removed.load(Ordering::Relaxed),
             self.dirs_removed.load(Ordering::Relaxed),
+            (done as f64 / known as f64) * 100.0,
             self.skipped.load(Ordering::Relaxed),
             self.errors.load(Ordering::Relaxed),
             self.jobs
         ));
-        self.pb.set_message(format!(
-            "{} / {} known ({:.0}%) | {}",
-            format_count(done),
-            format_count(known),
-            (done as f64 / known as f64) * 100.0,
-            active.as_ref()
-        ));
     }
 
-    fn maybe_refresh(&self, active: impl AsRef<str>, count: u64) {
+    fn maybe_refresh(&self, count: u64) {
         if count < 16 || count.is_multiple_of(64) {
-            self.refresh(active);
+            self.refresh();
         }
     }
 }
@@ -300,71 +292,39 @@ impl CliProgress {
 impl PurgeProgress for CliProgress {
     fn work_discovered(&self, count: u64) {
         let total = self.work_known.fetch_add(count, Ordering::Relaxed) + count;
-        self.maybe_refresh("discovering work", total);
+        self.maybe_refresh(total);
     }
 
-    fn root_started(&self, path: &Path) {
+    fn root_started(&self, _path: &Path) {
         let count = self.roots.fetch_add(1, Ordering::Relaxed) + 1;
-        self.maybe_refresh(format!("root {}", short_path(path)), count);
+        self.maybe_refresh(count);
     }
 
-    fn dir_scanned(&self, path: &Path) {
+    fn dir_scanned(&self, _path: &Path) {
         let count = self.dirs_scanned.fetch_add(1, Ordering::Relaxed) + 1;
-        self.maybe_refresh(format!("scanning {}", short_path(path)), count);
+        self.maybe_refresh(count);
     }
 
     fn file_removed(&self) {
         let count = self.files_removed.fetch_add(1, Ordering::Relaxed) + 1;
         self.work_done.fetch_add(1, Ordering::Relaxed);
-        self.maybe_refresh("unlinking files", count);
+        self.maybe_refresh(count);
     }
 
     fn dir_removed(&self) {
         let count = self.dirs_removed.fetch_add(1, Ordering::Relaxed) + 1;
         self.work_done.fetch_add(1, Ordering::Relaxed);
-        self.maybe_refresh("removing directories", count);
+        self.maybe_refresh(count);
     }
 
     fn skipped(&self) {
         let count = self.skipped.fetch_add(1, Ordering::Relaxed) + 1;
         self.work_done.fetch_add(1, Ordering::Relaxed);
-        self.maybe_refresh("skipping cross-device directory", count);
+        self.maybe_refresh(count);
     }
 
     fn error(&self) {
         let count = self.errors.fetch_add(1, Ordering::Relaxed) + 1;
-        self.maybe_refresh("recording errors", count);
+        self.maybe_refresh(count);
     }
-}
-
-fn format_count(count: u64) -> String {
-    let text = count.to_string();
-    let mut formatted = String::with_capacity(text.len() + text.len() / 3);
-    let first_group = text.len() % 3;
-
-    for (index, ch) in text.chars().enumerate() {
-        if index > 0
-            && (index == first_group
-                || (index > first_group && (index - first_group).is_multiple_of(3)))
-        {
-            formatted.push(',');
-        }
-        formatted.push(ch);
-    }
-
-    formatted
-}
-
-fn short_path(path: &Path) -> String {
-    let text = path.display().to_string();
-    let char_count = text.chars().count();
-    if char_count <= 96 {
-        return text;
-    }
-
-    let tail = text
-        .chars()
-        .skip(char_count.saturating_sub(93))
-        .collect::<String>();
-    format!("...{tail}")
 }
