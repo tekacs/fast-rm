@@ -1,26 +1,114 @@
 # fast-delete
 
-`fast-delete` moves top-level targets into the platform Trash, then purges the
-staged Trash paths with a parallel fd-relative deleter.
+`fast-delete` is a Rust deleter for large directory trees.
 
-Default behavior:
+By default it moves each top-level target into the platform Trash first, then
+purges the staged Trash path with a parallel fd-relative walker. That gives the
+interactive win of making the original path disappear immediately, while still
+leaving a recoverable OS Trash item if the process dies after staging and before
+purge completes.
+
+## Install
+
+From this checkout:
+
+```sh
+cargo install --locked --path .
+```
+
+## Usage
 
 ```sh
 fast-delete path [path ...]
 ```
 
-Modes:
+Default mode:
+
+1. Move each top-level target into the OS Trash.
+2. Print the staged Trash destination.
+3. Purge those staged paths in parallel.
+4. Remove Linux `.trashinfo` metadata for successfully purged staged items.
+
+Useful modes:
 
 ```sh
-fast-delete --trash-only path [path ...]  # stage into OS Trash, stop
-fast-delete --direct path [path ...]      # skip Trash staging, delete directly
-fast-delete --detach path [path ...]      # stage, spawn background purge worker
-fast-delete --jobs 16 path [path ...]     # choose purge worker threads
-fast-delete --cross-device path           # traverse nested mount/device boundaries
+fast-delete path [path ...]          # Trash-then-purge
+fast-delete --direct path [path ...] # Delete directly, without Trash staging
+fast-delete --trash-only path        # Move to Trash and stop
+fast-delete --detach path            # Move to Trash, then purge in the background
+fast-delete --jobs 24 path           # Choose purge worker threads
+fast-delete --cross-device path      # Traverse nested device/mount boundaries
 ```
 
-macOS staging uses Foundation's `NSFileManager` trash API and purges the returned
-Trash destination.
+`--purge-only` is accepted as an alias for `--direct`.
+
+## Modes
+
+### Trash-then-purge
+
+This is the default. It is meant for "make this huge tree disappear now" usage.
+
+On a successful Trash move, the original path is gone immediately. The purge
+phase then deletes the staged Trash path. If `fast-delete` exits or crashes after
+the Trash move but before the purge completes, the remaining item is still in the
+platform Trash location.
+
+### Direct
+
+```sh
+fast-delete --direct target*
+```
+
+Direct mode skips Trash staging and purges the paths exactly where they are.
+It is the fastest path when you do not want the recoverable staging step.
+
+### Trash-only
+
+```sh
+fast-delete --trash-only path
+```
+
+Trash-only mode performs only the platform Trash move. It is useful when you want
+the instant top-level disappearance and intend to let the desktop environment or
+OS empty Trash operation handle deletion later.
+
+### Detached
+
+```sh
+fast-delete --detach path
+```
+
+Detached mode stages into Trash, writes a job manifest, spawns a background
+worker, and returns. The worker purges the staged paths and records status,
+counts, and errors in the manifest.
+
+Job manifests live under:
+
+```text
+macOS: $HOME/Library/Application Support/fast-delete/jobs/
+Linux: $XDG_STATE_HOME/fast-delete/jobs/
+Linux fallback: $HOME/.local/state/fast-delete/jobs/
+```
+
+Set `FAST_DELETE_STATE_DIR` to override that root.
+
+Detached workers write logs next to the manifest using the same path with a
+`.log` extension.
+
+## Platform Trash Behavior
+
+### macOS
+
+macOS staging uses Foundation's `NSFileManager` Trash API:
+
+```text
+trashItemAtURL:resultingItemURL:error:
+```
+
+`fast-delete` purges the returned Trash destination. If Foundation does not
+return a destination, the command fails rather than guessing where the item went.
+
+### Linux
 
 Linux staging uses the FreeDesktop Trash layout:
 
@@ -30,8 +118,75 @@ Trash/
   info/<name>.trashinfo
 ```
 
-If the process dies after staging, the item is still in a desktop-visible Trash
-location whenever the platform Trash move completed.
+For paths on the same filesystem as `$XDG_DATA_HOME`, it uses:
 
-Foreground purge modes show live progress while they scan and unlink. Detached
-workers stay quiet and record status in their job manifest.
+```text
+$XDG_DATA_HOME/Trash
+```
+
+with `$HOME/.local/share/Trash` as the normal fallback root.
+
+For paths on another filesystem, it stages under that filesystem's Trash area:
+
+```text
+<mount>/.Trash/<uid>/
+```
+
+when a shared `.Trash` directory exists, otherwise:
+
+```text
+<mount>/.Trash-<uid>/
+```
+
+The target is renamed into `files/`, and its `.trashinfo` record is published in
+`info/`. The move is checked to ensure staging stayed on the same device.
+
+## Purge Semantics
+
+The purge walker is Unix-only today.
+
+It:
+
+- Deletes files and symlinks as entries.
+- Does not follow symlinks.
+- Refuses an empty path and filesystem root.
+- Walks directories bottom-up.
+- Uses `openat`, `unlinkat`, `fdopendir`, and fd-relative traversal.
+- Uses `dirent.d_type` when available, falling back to `fstatat(..., AT_SYMLINK_NOFOLLOW)` only when the directory entry type is unknown.
+- Skips nested directories on another device by default.
+- Crosses nested device boundaries only with `--cross-device`.
+
+Errors are collected and printed after the purge report. A run exits non-zero if
+any staging or purge errors were recorded.
+
+## Progress
+
+Foreground purge modes show a two-line progress display:
+
+```text
+\ deleting directly | roots 24 | scanned dirs 2841 | removed 50260 files + 2752 dirs | known 72% | skipped 0 | errors 0 | jobs 24
+  [########################################----------------]
+```
+
+The bar is adaptive. `fast-delete` does not pre-scan the tree, because that would
+double the traversal work. Instead, the known-work denominator grows as traversal
+discovers roots, child directories, and file batches. The completed position only
+moves forward as entries are actually removed or skipped.
+
+Detached workers do not render progress. They report through the job manifest
+and worker log.
+
+## Development
+
+```sh
+just fmt
+just clippy
+just test
+```
+
+The Linux matrix smoke script exercises direct delete, Trash-then-purge, and
+Trash-only behavior on disposable ZFS, ext4-on-zvol, and XFS test trees:
+
+```sh
+scripts/remote-linux-matrix.sh
+```
